@@ -31,6 +31,7 @@ export interface AppConfig {
   micVolume: number;
   micMuted: boolean;
   stayAwake: boolean;
+  showTouches: boolean;
   theme: ThemeMode;
 }
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, Smartphone, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MousePointerClick, Smartphone, Volume2, VolumeX } from 'lucide-react';
 import type { AppConfig } from '../types';
 
 interface AudioPanelProps {
@@ -56,7 +56,7 @@ const Section: React.FC<{
   onToggle: () => void;
   toggleDisabled?: boolean;
   toggleTitle?: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
 }> = ({ icon, title, hint, on, onToggle, toggleDisabled, toggleTitle, children }) => (
   <section style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -86,8 +86,20 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({ config, onChange, isReco
   const inputs = micDevices.filter((d) => d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
 
   return (
-    <aside className="sider" aria-label="Audio">
-      <h2>Audio</h2>
+    <aside className="sider" aria-label="Capture options">
+      <h2>Capture</h2>
+
+      <Section
+        icon={<MousePointerClick size={16} />}
+        title="Show taps"
+        hint="Dots where you click or tap"
+        on={config.showTouches}
+        onToggle={() => onChange({ showTouches: !config.showTouches })}
+        toggleDisabled={isRecording}
+        toggleTitle={lockedTitle}
+      />
+
+      <div className="divider" />
 
       <Section
         icon={<Smartphone size={16} />}

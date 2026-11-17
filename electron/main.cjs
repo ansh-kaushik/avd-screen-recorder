@@ -66,6 +66,7 @@ const DEFAULT_CONFIG = {
   micVolume: 1,
   micMuted: false,
   stayAwake: true,
+  showTouches: false,
   theme: 'system'
 };
 
@@ -415,6 +416,11 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     args.push('--stay-awake');
   }
 
+  // Android's own touch indicators; emulator mouse clicks arrive as touches.
+  if (config.showTouches) {
+    args.push('--show-touches');
+  }
+
   console.log(`Spawning scrcpy: ${scrcpyBin}`, args);
 
   try {
@@ -496,6 +502,11 @@ ipcMain.handle('record:resume', async () => {
 
   if (config.stayAwake) {
     args.push('--stay-awake');
+  }
+
+  // Android's own touch indicators; emulator mouse clicks arrive as touches.
+  if (config.showTouches) {
+    args.push('--show-touches');
   }
 
   try {
