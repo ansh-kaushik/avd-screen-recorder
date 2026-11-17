@@ -4,7 +4,10 @@ import { DevicePreview } from './components/DevicePreview';
 import { RecordingControls } from './components/RecordingControls';
 import { SaveExportModal } from './components/SaveExportModal';
 import { SettingsModal } from './components/SettingsModal';
-import type { AndroidDevice, AppConfig, RecordingResult } from './types';
+import { AudioPanel } from './components/AudioPanel';
+import { useMic } from './useMic';
+import { CheckCircle2, Info, XCircle } from 'lucide-react';
+import type { AndroidDevice, AppConfig, RecordingResult, ThemeMode } from './types';
 
 const DEFAULT_CONFIG: AppConfig = {
   scrcpyPath: 'C:\\Users\\anshk\\Desktop\\dt\\Desktop6_work\\AVD_SCREEN_RECORDER\\scrcpy\\scrcpy.exe',
@@ -15,7 +18,14 @@ const DEFAULT_CONFIG: AppConfig = {
   defaultFps: 60,
   audioEnabled: true,
   audioSource: 'playback',
-  stayAwake: true
+  audioVolume: 1,
+  audioMuted: false,
+  micEnabled: false,
+  micDeviceId: '',
+  micVolume: 1,
+  micMuted: false,
+  stayAwake: true,
+  theme: 'system'
 };
 
 export function App() {
@@ -32,6 +42,15 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [recordingResult, setRecordingResult] = useState<RecordingResult | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const mic = useMic(config.micEnabled, config.micDeviceId, config.micVolume, config.micMuted);
+
+  // Theme: 'system' follows prefers-color-scheme; explicit choice sets data-theme on <html>.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (config.theme === 'system') delete root.dataset.theme;
+    else root.dataset.theme = config.theme;
+  }, [config.theme]);
 
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToastMessage({ text, type });
@@ -94,6 +113,7 @@ export function App() {
       });
 
       if (res.success) {
+        mic.arm();
         setIsRecording(true);
         setIsPaused(false);
         setSegmentCount(1);
@@ -110,6 +130,7 @@ export function App() {
   const handlePauseRecording = async () => {
     if (!window.electronAPI) return;
     try {
+      mic.pause();
       const res = await window.electronAPI.pauseRecording();
       if (res.success) {
         setIsPaused(true);
@@ -126,6 +147,7 @@ export function App() {
     try {
       const res = await window.electronAPI.resumeRecording();
       if (res.success) {
+        mic.expectResume();
         setIsPaused(false);
         setSegmentCount((prev) => prev + 1);
         showToast(`Recording resumed (Segment ${res.chunkIndex || segmentCount + 1})`, 'info');
@@ -142,7 +164,11 @@ export function App() {
     showToast('Stitching recording & generating preview...', 'info');
 
     try {
-      const res = await window.electronAPI.stopRecording();
+      const micAudio = await mic.stop();
+      const res = await window.electronAPI.stopRecording({
+        micAudio,
+        deviceVolume: config.audioMuted ? 0 : config.audioVolume
+      });
       setIsRecording(false);
       setIsPaused(false);
       setIsProcessing(false);
@@ -184,6 +210,13 @@ export function App() {
     }
   };
 
+  // Audio/theme changes persist quietly (no toast per slider tick).
+  const handleAudioChange = (patch: Partial<AppConfig>) => {
+    const next = { ...config, ...patch };
+    setConfig(next);
+    window.electronAPI?.saveConfig(next);
+  };
+
   // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -212,41 +245,18 @@ export function App() {
 
   const selectedDevice = devices.find((d) => d.id === selectedDeviceId);
 
+  const ToastIcon = toastMessage?.type === 'error' ? XCircle : toastMessage?.type === 'success' ? CheckCircle2 : Info;
+  const toastColor = toastMessage?.type === 'error' ? 'var(--color-error)' : toastMessage?.type === 'success' ? 'var(--color-success)' : 'var(--color-primary)';
+
   return (
-    <div style={{
-      width: '100vw',
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      position: 'relative',
-      overflow: 'hidden'
-    }}>
-      {/* Toast Notification Banner */}
+    <div className="app">
       {toastMessage && (
-        <div style={{
-          position: 'fixed',
-          top: '20px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 200,
-          background: toastMessage.type === 'error'
-            ? 'rgba(239, 68, 68, 0.95)'
-            : toastMessage.type === 'success'
-            ? 'rgba(16, 185, 129, 0.95)'
-            : 'rgba(30, 41, 59, 0.95)',
-          color: '#fff',
-          padding: '8px 18px',
-          borderRadius: '12px',
-          fontSize: '13px',
-          fontWeight: 600,
-          boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(10px)'
-        }}>
+        <div className="toast" role={toastMessage.type === 'error' ? 'alert' : 'status'}>
+          <ToastIcon size={16} color={toastColor} />
           {toastMessage.text}
         </div>
       )}
 
-      {/* Top Header */}
       <Header
         devices={devices}
         selectedDeviceId={selectedDeviceId}
@@ -257,33 +267,46 @@ export function App() {
         isPaused={isPaused}
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedDevice={selectedDevice}
+        theme={config.theme}
+        onThemeChange={(theme: ThemeMode) => handleAudioChange({ theme })}
       />
 
-      {/* Main Center Studio Canvas Preview */}
-      <DevicePreview
-        selectedDevice={selectedDevice}
-        isRecording={isRecording}
-        isPaused={isPaused}
-        bitrate={config.defaultBitrate}
-        fps={config.defaultFps}
-      />
+      <div className="app-body">
+        <AudioPanel
+          config={config}
+          onChange={handleAudioChange}
+          isRecording={isRecording}
+          micDevices={mic.devices}
+          micLevel={mic.level}
+          micError={mic.error}
+        />
 
-      {/* Floating Bottom Recording Dock */}
-      <RecordingControls
-        isRecording={isRecording}
-        isPaused={isPaused}
-        isProcessing={isProcessing}
-        onStart={handleStartRecording}
-        onPause={handlePauseRecording}
-        onResume={handleResumeRecording}
-        onStop={handleStopRecording}
-        bitrate={config.defaultBitrate}
-        fps={config.defaultFps}
-        segmentCount={segmentCount}
-        hasDevice={devices.length > 0}
-      />
+        <main className="stage">
+          <DevicePreview
+            selectedDevice={selectedDevice}
+            isRecording={isRecording}
+            isPaused={isPaused}
+            bitrate={config.defaultBitrate}
+            fps={config.defaultFps}
+          />
+          <RecordingControls
+            isRecording={isRecording}
+            isPaused={isPaused}
+            isProcessing={isProcessing}
+            onStart={handleStartRecording}
+            onPause={handlePauseRecording}
+            onResume={handleResumeRecording}
+            onStop={handleStopRecording}
+            bitrate={config.defaultBitrate}
+            fps={config.defaultFps}
+            segmentCount={segmentCount}
+            hasDevice={devices.length > 0}
+            micEnabled={config.micEnabled}
+            micLevel={mic.level}
+          />
+        </main>
+      </div>
 
-      {/* Post-Capture Save & Export Modal */}
       {recordingResult && (
         <SaveExportModal
           result={recordingResult}
@@ -292,7 +315,6 @@ export function App() {
         />
       )}
 
-      {/* Settings Modal */}
       {isSettingsOpen && (
         <SettingsModal
           config={config}

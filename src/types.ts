@@ -13,6 +13,8 @@ export interface WindowSource {
   isEmulator: boolean;
 }
 
+export type ThemeMode = 'system' | 'light' | 'dark';
+
 export interface AppConfig {
   scrcpyPath: string;
   ffmpegPath: string;
@@ -22,7 +24,14 @@ export interface AppConfig {
   defaultFps: number;
   audioEnabled: boolean;
   audioSource: string;
+  audioVolume: number;
+  audioMuted: boolean;
+  micEnabled: boolean;
+  micDeviceId: string;
+  micVolume: number;
+  micMuted: boolean;
   stayAwake: boolean;
+  theme: ThemeMode;
 }
 
 export interface RecordingResult {
@@ -63,7 +72,8 @@ export interface ElectronAPI {
 
   pauseRecording: () => Promise<{ success: boolean; isPaused?: boolean; error?: string }>;
   resumeRecording: () => Promise<{ success: boolean; isPaused?: boolean; chunkIndex?: number; error?: string }>;
-  stopRecording: () => Promise<{ success: boolean } & Partial<RecordingResult> & { error?: string }>;
+  onRecordingStarted: (cb: () => void) => () => void;
+  stopRecording: (options?: { micAudio?: ArrayBuffer | null; deviceVolume?: number }) => Promise<{ success: boolean } & Partial<RecordingResult> & { error?: string }>;
 
   getVideoUrl: (filePath: string) => Promise<{ success: boolean; url?: string; error?: string }>;
 

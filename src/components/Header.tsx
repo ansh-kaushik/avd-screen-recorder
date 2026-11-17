@@ -1,6 +1,6 @@
 import React from 'react';
-import { Smartphone, RefreshCw, Settings, Video, ShieldCheck, AlertTriangle } from 'lucide-react';
-import type { AndroidDevice } from '../types';
+import { Monitor, Moon, RefreshCw, Settings, Sun, Video } from 'lucide-react';
+import type { AndroidDevice, ThemeMode } from '../types';
 
 interface HeaderProps {
   devices: AndroidDevice[];
@@ -12,7 +12,15 @@ interface HeaderProps {
   isPaused: boolean;
   onOpenSettings: () => void;
   selectedDevice?: AndroidDevice;
+  theme: ThemeMode;
+  onThemeChange: (t: ThemeMode) => void;
 }
+
+const THEMES: { value: ThemeMode; label: string; icon: React.ReactNode }[] = [
+  { value: 'system', label: 'Follow system theme', icon: <Monitor size={14} /> },
+  { value: 'light', label: 'Light theme', icon: <Sun size={14} /> },
+  { value: 'dark', label: 'Dark theme', icon: <Moon size={14} /> }
+];
 
 export const Header: React.FC<HeaderProps> = ({
   devices,
@@ -23,167 +31,68 @@ export const Header: React.FC<HeaderProps> = ({
   isRecording,
   isPaused,
   onOpenSettings,
-  selectedDevice
+  selectedDevice,
+  theme,
+  onThemeChange
 }) => {
+  const status = isRecording
+    ? isPaused
+      ? { cls: 'badge-warning', text: 'Paused' }
+      : { cls: 'badge-error badge-processing', text: 'Recording' }
+    : selectedDevice
+      ? { cls: 'badge-success', text: 'Ready' }
+      : { cls: '', text: 'No device' };
+
   return (
-    <header className="glass-panel" style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: '12px 24px',
-      margin: '16px 20px 0 20px',
-      borderRadius: '16px',
-      zIndex: 20
-    }}>
-      {/* Brand Logo & Title */}
+    <header className="app-header">
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <div style={{
-          width: '40px',
-          height: '40px',
-          borderRadius: '12px',
-          background: 'linear-gradient(135deg, #3b82f6, #06b6d4)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          boxShadow: '0 0 15px rgba(59, 130, 246, 0.4)'
-        }}>
-          <Video size={22} color="#fff" />
-        </div>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <h1 style={{ fontSize: '17px', fontWeight: 800, letterSpacing: '-0.02em' }}>AVD STUDIO</h1>
-            <span style={{
-              fontSize: '10px',
-              fontWeight: 700,
-              padding: '2px 8px',
-              borderRadius: '6px',
-              background: 'rgba(59, 130, 246, 0.2)',
-              color: '#60a5fa',
-              border: '1px solid rgba(59, 130, 246, 0.3)'
-            }}>PRO 4K</span>
-          </div>
-          <p style={{ fontSize: '11px', color: 'var(--text-dim)' }}>Zero-Limit Android Emulator Recorder</p>
-        </div>
+        <Video size={20} color="var(--color-primary)" aria-hidden />
+        <h1 style={{ fontSize: '16px', lineHeight: '24px' }}>AVD Studio</h1>
+        <span className="text-tertiary text-sm">Android emulator recorder</span>
       </div>
 
-      {/* Device Selector & Live Status */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-        {/* Device Picker */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          background: 'rgba(10, 14, 24, 0.7)',
-          padding: '6px 12px',
-          borderRadius: '12px',
-          border: '1px solid var(--border-subtle)'
-        }}>
-          <Smartphone size={16} color="#60a5fa" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div className="field-row" style={{ alignItems: 'center' }}>
           <select
+            aria-label="Android device"
             value={selectedDeviceId}
             onChange={(e) => onSelectDevice(e.target.value)}
             disabled={isRecording}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: '2px 6px',
-              fontSize: '13px',
-              fontWeight: 600,
-              cursor: isRecording ? 'not-allowed' : 'pointer'
-            }}
+            title={isRecording ? 'Stop recording to switch device' : undefined}
+            style={{ width: '320px' }}
           >
             {devices.length === 0 ? (
-              <option value="">No Android Device Detected</option>
+              <option value="">No device detected</option>
             ) : (
               devices.map((d) => (
-                <option key={d.id} value={d.id} style={{ background: '#0e131f' }}>
-                  {d.id} ({d.model || 'Android'} - {d.resolution})
+                <option key={d.id} value={d.id}>
+                  {d.model || 'Android'} · {d.id} · {d.resolution}
                 </option>
               ))
             )}
           </select>
-
           <button
+            className="btn btn-icon"
             onClick={onRefreshDevices}
             disabled={isLoadingDevices || isRecording}
-            title="Refresh Devices"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              padding: '4px',
-              display: 'flex',
-              alignItems: 'center'
-            }}
+            aria-label="Refresh devices"
+            title="Refresh devices"
           >
-            <RefreshCw size={14} className={isLoadingDevices ? 'animate-spin' : ''} />
+            <RefreshCw size={16} className={isLoadingDevices ? 'spin' : ''} />
           </button>
         </div>
 
-        {/* Status Pill */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '6px 12px',
-          borderRadius: '20px',
-          fontSize: '12px',
-          fontWeight: 700,
-          background: isRecording
-            ? isPaused
-              ? 'rgba(245, 158, 11, 0.15)'
-              : 'rgba(239, 68, 68, 0.18)'
-            : selectedDevice
-            ? 'rgba(16, 185, 129, 0.15)'
-            : 'rgba(239, 68, 68, 0.15)',
-          color: isRecording
-            ? isPaused
-              ? '#f59e0b'
-              : '#ef4444'
-            : selectedDevice
-            ? '#10b981'
-            : '#ef4444',
-          border: `1px solid ${
-            isRecording
-              ? isPaused
-                ? 'rgba(245, 158, 11, 0.4)'
-                : 'rgba(239, 68, 68, 0.4)'
-              : selectedDevice
-              ? 'rgba(16, 185, 129, 0.3)'
-              : 'rgba(239, 68, 68, 0.3)'
-          }`
-        }}>
-          {isRecording ? (
-            <>
-              <span style={{
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                background: isPaused ? '#f59e0b' : '#ef4444'
-              }} className={isPaused ? 'pause-pulsing' : 'rec-pulsing'} />
-              {isPaused ? 'PAUSED' : 'RECORDING'}
-            </>
-          ) : selectedDevice ? (
-            <>
-              <ShieldCheck size={14} />
-              READY ({selectedDevice.resolution})
-            </>
-          ) : (
-            <>
-              <AlertTriangle size={14} />
-              NO DEVICE
-            </>
-          )}
+        <span className={`badge ${status.cls}`} role="status" style={{ minWidth: '88px' }}>{status.text}</span>
+
+        <div className="segmented" role="group" aria-label="Theme">
+          {THEMES.map((t) => (
+            <button key={t.value} aria-pressed={theme === t.value} aria-label={t.label} title={t.label} onClick={() => onThemeChange(t.value)}>
+              {t.icon}
+            </button>
+          ))}
         </div>
 
-        {/* Settings button */}
-        <button
-          onClick={onOpenSettings}
-          className="btn-secondary"
-          style={{ padding: '8px 12px' }}
-          title="Recorder Settings"
-        >
+        <button className="btn btn-icon" onClick={onOpenSettings} aria-label="Settings" title="Settings">
           <Settings size={16} />
         </button>
       </div>

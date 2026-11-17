@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, protocol, net, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -59,7 +59,14 @@ const DEFAULT_CONFIG = {
   defaultFps: 60,
   audioEnabled: true,
   audioSource: 'playback',
-  stayAwake: true
+  audioVolume: 1,
+  audioMuted: false,
+  micEnabled: false,
+  micDeviceId: '',
+  micVolume: 1,
+  micMuted: false,
+  stayAwake: true,
+  theme: 'system'
 };
 
 const CONFIG_FILE = path.join(app.getPath('userData'), 'avd_recorder_config.json');
@@ -121,8 +128,8 @@ function createWindow() {
     height: 860,
     minWidth: 1000,
     minHeight: 700,
-    backgroundColor: '#07090e',
-    title: 'AVD Studio Recorder Pro',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#000000' : '#f5f5f5',
+    title: 'AVD Studio',
     frame: true,
     autoHideMenuBar: true,
     webPreferences: {
@@ -151,6 +158,16 @@ function createWindow() {
     mainWindow = null;
     cleanupCurrentSession();
   });
+}
+
+// scrcpy logs "Recording started" once the first packets hit the file; the
+// renderer uses it to start/resume the mic track in sync with the video.
+function logScrcpyErr(d) {
+  const text = d.toString();
+  console.log(`[scrcpy err] ${text}`);
+  if (text.includes('Recording started') && mainWindow) {
+    mainWindow.webContents.send('record:started');
+  }
 }
 
 function cleanupCurrentSession() {
@@ -413,7 +430,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     currentSession.activeProcess = proc;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', (d) => console.log(`[scrcpy err] ${d.toString()}`));
+    proc.stderr.on('data', logScrcpyErr);
 
     proc.on('close', (code) => {
       console.log(`scrcpy chunk finished with code ${code}`);
@@ -495,7 +512,7 @@ ipcMain.handle('record:resume', async () => {
     currentSession.isPaused = false;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', (d) => console.log(`[scrcpy err] ${d.toString()}`));
+    proc.stderr.on('data', logScrcpyErr);
 
     return { success: true, isPaused: false, chunkIndex: currentSession.chunkIndex };
   } catch (err) {
@@ -504,7 +521,7 @@ ipcMain.handle('record:resume', async () => {
 });
 
 // 9. Stop Recording and Process Final Video
-ipcMain.handle('record:stop', async () => {
+ipcMain.handle('record:stop', async (_, { micAudio = null, deviceVolume = 1 } = {}) => {
   if (!currentSession) {
     return { success: false, error: 'No active session.' };
   }
@@ -553,6 +570,8 @@ ipcMain.handle('record:stop', async () => {
     });
   }
 
+  await mixAudio(ffmpegBin, session.tempDir, finalVideoPath, micAudio, deviceVolume);
+
   let fileSize = 0;
   let thumbnailDataUrl = null;
 
@@ -581,6 +600,37 @@ ipcMain.handle('record:stop', async () => {
     defaultSaveDir: config.defaultSaveDir
   };
 });
+
+function runFfmpeg(cmd) {
+  return new Promise((res) => exec(cmd, (err, _o, stderr) => {
+    if (err) console.error('FFmpeg error:', stderr);
+    res(!err);
+  }));
+}
+
+// Mix the PC mic track (already gain/mute-adjusted in the renderer) and apply
+// device-audio volume. Video is stream-copied; only audio is re-encoded.
+async function mixAudio(ffmpegBin, tempDir, videoPath, micAudio, deviceVolume) {
+  const dv = Math.max(0, Math.min(2, Number(deviceVolume) || 0)).toFixed(2);
+  if (!micAudio && Number(dv) === 1) return;
+
+  const out = path.join(tempDir, 'mixed.mp4');
+  const enc = `-c:v copy -c:a aac -b:a 192k "${out}"`;
+  let ok;
+
+  if (micAudio) {
+    const micPath = path.join(tempDir, 'mic.webm');
+    fs.writeFileSync(micPath, Buffer.from(micAudio));
+    const inputs = `${ffmpegBin} -y -i "${videoPath}" -i "${micPath}"`;
+    ok = await runFfmpeg(`${inputs} -filter_complex "[0:a]volume=${dv}[d];[d][1:a]amix=inputs=2:duration=first:normalize=0[a]" -map 0:v -map "[a]" ${enc}`);
+    // No device audio track in the video (audio off / unsupported) -> mic only.
+    if (!ok) ok = await runFfmpeg(`${inputs} -map 0:v -map 1:a -shortest ${enc}`);
+  } else {
+    ok = await runFfmpeg(`${ffmpegBin} -y -i "${videoPath}" -filter:a volume=${dv} ${enc}`);
+  }
+
+  if (ok && fs.existsSync(out)) fs.renameSync(out, videoPath);
+}
 
 // 10. Get Media URL for robust HTML5 video playback
 ipcMain.handle('video:getDataUrl', async (_, filePath) => {

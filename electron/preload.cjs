@@ -11,7 +11,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startRecording: (options) => ipcRenderer.invoke('record:start', options),
   pauseRecording: () => ipcRenderer.invoke('record:pause'),
   resumeRecording: () => ipcRenderer.invoke('record:resume'),
-  stopRecording: () => ipcRenderer.invoke('record:stop'),
+  stopRecording: (options) => ipcRenderer.invoke('record:stop', options),
+  onRecordingStarted: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('record:started', listener);
+    return () => ipcRenderer.removeListener('record:started', listener);
+  },
   saveRecording: (payload) => ipcRenderer.invoke('record:save', payload),
   discardRecording: (payload) => ipcRenderer.invoke('record:discard', payload),
   getVideoUrl: (filePath) => ipcRenderer.invoke('video:getDataUrl', filePath),
