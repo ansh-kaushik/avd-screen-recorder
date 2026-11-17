@@ -92,7 +92,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({ config, onChange, isReco
       <Section
         icon={<MousePointer2 size={16} />}
         title="Show cursor"
-        hint="Record a mouse pointer with hover"
+        hint="Your PC pointer over the emulator"
         on={config.showCursor}
         onToggle={() => onChange({ showCursor: !config.showCursor })}
         toggleDisabled={isRecording}
@@ -100,8 +100,7 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({ config, onChange, isReco
       >
         {config.showCursor && (
           <p className="text-sm text-secondary">
-            Recording opens a mirror window. Click and hover in that window, not the emulator.
-            Press Alt to release your mouse.
+            Added to the video when you stop, so saving takes a little longer.
           </p>
         )}
       </Section>

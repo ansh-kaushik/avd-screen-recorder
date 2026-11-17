@@ -162,27 +162,104 @@ function createWindow() {
   });
 }
 
-// scrcpy logs "Recording started" once the first packets hit the file; the
-// renderer uses it to start/resume the mic track in sync with the video.
-function logScrcpyErr(d) {
-  const text = d.toString();
-  console.log(`[scrcpy err] ${text}`);
-  if (text.includes('Recording started') && mainWindow) {
-    mainWindow.webContents.send('record:started');
+// Win32 cursor tracker. Prints "dpi N" once, then "<unixMs> <x> <y> <clientW> <clientH>"
+// whenever the cursor moves relative to the emulator window's client area (which is
+// exactly the device screen), or "<unixMs> hidden" when the window is minimized/gone.
+const CURSOR_TRACKER_PS = `
+Add-Type @"
+using System; using System.Text; using System.Threading; using System.Runtime.InteropServices;
+public static class CT {
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+  struct RECT { public int L, T, R, B; } struct POINT { public int X, Y; }
+  static IntPtr Find(string port) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      var sb = new StringBuilder(256); GetWindowText(h, sb, 256); var t = sb.ToString();
+      if (IsWindowVisible(h) && t.StartsWith("Android Emulator") && t.EndsWith(":" + port)) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    return found;
   }
+  public static void Run(string port) {
+    SetProcessDPIAware();
+    IntPtr h = IntPtr.Zero; string last = ""; bool dpiSent = false;
+    while (true) {
+      if (!IsWindow(h)) h = Find(port);
+      string line;
+      if (h == IntPtr.Zero || IsIconic(h)) line = "hidden";
+      else {
+        if (!dpiSent) { Console.Out.WriteLine("dpi " + GetDpiForWindow(h)); dpiSent = true; }
+        POINT c; GetCursorPos(out c); RECT r; GetClientRect(h, out r); POINT o = new POINT(); ClientToScreen(h, ref o);
+        line = (c.X - o.X) + " " + (c.Y - o.Y) + " " + r.R + " " + r.B;
+      }
+      if (line != last) { Console.Out.WriteLine(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + " " + line); Console.Out.Flush(); last = line; }
+      Thread.Sleep(15);
+    }
+  }
+}
+"@
+[CT]::Run($env:AVD_EMU_PORT)
+`;
+
+function startCursorTracker(deviceId, chunk) {
+  const port = (deviceId.match(/^emulator-(\d+)$/) || [])[1];
+  if (!port) return; // only emulators have a desktop window to track
+  const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', CURSOR_TRACKER_PS], {
+    windowsHide: true,
+    env: { ...process.env, AVD_EMU_PORT: port }
+  });
+  let buf = '';
+  ps.stdout.on('data', (d) => {
+    buf += d.toString();
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop();
+    for (const l of lines) parseTrackerLine(l, chunk);
+  });
+  ps.stderr.on('data', (d) => console.error(`[cursor tracker] ${d}`));
+  chunk.tracker = ps;
+}
+
+function parseTrackerLine(line, chunk) {
+  const p = line.trim().split(' ');
+  if (p[0] === 'dpi') chunk.dpi = Number(p[1]) || 96;
+  else if (p[1] === 'hidden') chunk.samples.push({ t: Number(p[0]), hidden: true });
+  else if (p.length === 5) chunk.samples.push({ t: Number(p[0]), x: +p[1], y: +p[2], w: +p[3], h: +p[4] });
+}
+
+// Per-chunk wiring. scrcpy logs "Recording started" once the first packets hit
+// the file: the renderer starts/resumes the mic on it, and it is t=0 for the cursor.
+function attachChunk(proc, chunkPath, config) {
+  const chunk = { t0: null, dpi: 96, samples: [], tracker: null };
+  if (config.showCursor) {
+    currentSession.cursor[chunkPath] = chunk;
+    startCursorTracker(currentSession.deviceId, chunk);
+  }
+  proc.stderr.on('data', (d) => {
+    const text = d.toString();
+    console.log(`[scrcpy err] ${text}`);
+    if (text.includes('Recording started')) {
+      chunk.t0 = Date.now();
+      if (mainWindow) mainWindow.webContents.send('record:started');
+    }
+  });
+  proc.on('close', () => {
+    try { chunk.tracker?.kill(); } catch (e) {}
+  });
 }
 
 // Options shared by every recording chunk (start and resume).
 function captureArgs(config) {
-  const args = [];
-  if (config.showCursor) {
-    // Opens a scrcpy mirror window. Its virtual (UHID) mouse makes Android draw a real
-    // pointer with hover, which is recorded at full resolution. Alt releases the mouse.
-    // Device audio is not played on the PC so it cannot leak into the mic.
-    args.push('--mouse=uhid', '--no-audio-playback', '--window-title=AVD Studio - click and hover here (Alt releases mouse)');
-  } else {
-    args.push('--no-playback');
-  }
+  const args = ['--no-playback'];
   if (config.stayAwake) args.push('--stay-awake');
   // Android's own touch indicators; emulator mouse clicks arrive as touches.
   if (config.showTouches) args.push('--show-touches');
@@ -407,7 +484,8 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     startTime: Date.now(),
     isRecording: true,
     isPaused: false,
-    activeProcess: null
+    activeProcess: null,
+    cursor: {}
   };
 
   const chunkPath = path.join(tempDir, `chunk_001.mp4`);
@@ -446,7 +524,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     currentSession.activeProcess = proc;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', logScrcpyErr);
+    attachChunk(proc, chunkPath, config);
 
     proc.on('close', (code) => {
       console.log(`scrcpy chunk finished with code ${code}`);
@@ -525,7 +603,7 @@ ipcMain.handle('record:resume', async () => {
     currentSession.isPaused = false;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', logScrcpyErr);
+    attachChunk(proc, chunkPath, config);
 
     return { success: true, isPaused: false, chunkIndex: currentSession.chunkIndex };
   } catch (err) {
@@ -549,7 +627,13 @@ ipcMain.handle('record:stop', async (_, { micAudio = null, deviceVolume = 1 } = 
   const config = loadConfig();
   const ffmpegBin = resolveFfmpegBin();
 
-  const validChunks = session.chunks.filter(c => fs.existsSync(c) && fs.statSync(c).size > 1024);
+  let validChunks = session.chunks.filter(c => fs.existsSync(c) && fs.statSync(c).size > 1024);
+
+  const withCursor = [];
+  for (const c of validChunks) {
+    withCursor.push(session.cursor[c] ? await overlayCursor(ffmpegBin, c, session.cursor[c], session.maxFps) : c);
+  }
+  validChunks = withCursor;
 
   if (validChunks.length === 0) {
     currentSession = null;
@@ -619,6 +703,61 @@ function runFfmpeg(cmd) {
     if (err) console.error('FFmpeg error:', stderr);
     res(!err);
   }));
+}
+
+function probeVideoSize(ffmpegBin, file) {
+  return new Promise((res) => exec(`${ffmpegBin} -hide_banner -i "${file}"`, (_e, _o, stderr) => {
+    const m = /Video:.*?, (\d{2,5})x(\d{2,5})/.exec(stderr || '');
+    const d = /Duration: (\d+):(\d+):([\d.]+)/.exec(stderr || '');
+    const duration = d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0;
+    res(m ? { w: +m[1], h: +m[2], duration } : null);
+  }));
+}
+
+// Tracked cursor samples -> sendcmd keyframes (seconds, video px). Pure, so it's testable.
+// cursor.png is a 4x arrow with its hotspot at (4,4).
+function cursorCommands(chunk, video) {
+  const lines = [];
+  for (const s of chunk.samples) {
+    const t = Math.max(0, (s.t - chunk.t0) / 1000);
+    if (t === 0 && lines.length) lines.pop(); // only the latest pre-start position matters at t=0
+    let x = -9999, y = -9999;
+    if (!s.hidden && s.w > 0 && s.h > 0 && s.x >= 0 && s.y >= 0 && s.x < s.w && s.y < s.h) {
+      const k = (video.w / s.w) * (chunk.dpi / 96) / 4; // cursor scale in the video
+      x = Math.round((s.x * video.w) / s.w - 4 * k);
+      y = Math.round((s.y * video.h) / s.h - 4 * k);
+    }
+    lines.push(`${t.toFixed(3)} overlay@c x ${x}, overlay@c y ${y};`);
+  }
+  return lines;
+}
+
+// Draw the PC cursor onto one chunk (re-encodes video, copies audio). Returns the path to use.
+async function overlayCursor(ffmpegBin, chunkPath, chunk, fps = 60) {
+  const first = chunk.samples.find((s) => s.w > 0);
+  if (chunk.t0 === null || !first) return chunkPath;
+  const video = await probeVideoSize(ffmpegBin, chunkPath);
+  if (!video || !video.duration) return chunkPath;
+
+  const dir = path.dirname(chunkPath);
+  const base = path.basename(chunkPath, '.mp4');
+  const cmdFile = `${base}_cursor.cmd`; // relative: ffmpeg runs with cwd=dir (avoids C: escaping)
+  fs.writeFileSync(path.join(dir, cmdFile), cursorCommands(chunk, video).join('\n'), 'utf-8');
+
+  const k = (video.w / first.w) * (chunk.dpi / 96) / 4;
+  const out = path.join(dir, `${base}_cursor.mp4`);
+  const cursorPng = path.join(__dirname, 'cursor.png');
+  // scrcpy video is variable-rate (no frames while the screen is still), so resample to a
+  // constant rate first; otherwise the cursor could only move when the app redraws.
+  // tpad repeats the last frame so a still screen still lasts the whole chunk.
+  const graph = `[0:v]tpad=stop_mode=clone:stop_duration=${video.duration.toFixed(3)},fps=${Number(fps) || 60},sendcmd=f=${cmdFile}[v];[1:v]scale=iw*${k.toFixed(4)}:-1[c];[v][c]overlay@c=x=-9999:y=-9999:eval=frame[o]`;
+  // ponytail: CPU re-encode (libx264 veryfast); switch to h264_nvenc/qsv if long clips are too slow.
+  const cmd = `${ffmpegBin} -y -i "${chunkPath}" -i "${cursorPng}" -filter_complex "${graph}" -map "[o]" -map 0:a? -t ${video.duration.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a copy "${out}"`;
+  const ok = await new Promise((res) => exec(cmd, { cwd: dir, maxBuffer: 16 * 1024 * 1024 }, (err, _o, stderr) => {
+    if (err) console.error('Cursor overlay error:', stderr);
+    res(!err);
+  }));
+  return ok && fs.existsSync(out) ? out : chunkPath;
 }
 
 // Mix the PC mic track (already gain/mute-adjusted in the renderer) and apply
