@@ -67,6 +67,7 @@ const DEFAULT_CONFIG = {
   micMuted: false,
   stayAwake: true,
   showTouches: false,
+  showCursor: false,
   theme: 'system'
 };
 
@@ -169,6 +170,23 @@ function logScrcpyErr(d) {
   if (text.includes('Recording started') && mainWindow) {
     mainWindow.webContents.send('record:started');
   }
+}
+
+// Options shared by every recording chunk (start and resume).
+function captureArgs(config) {
+  const args = [];
+  if (config.showCursor) {
+    // Opens a scrcpy mirror window. Its virtual (UHID) mouse makes Android draw a real
+    // pointer with hover, which is recorded at full resolution. Alt releases the mouse.
+    // Device audio is not played on the PC so it cannot leak into the mic.
+    args.push('--mouse=uhid', '--no-audio-playback', '--window-title=AVD Studio - click and hover here (Alt releases mouse)');
+  } else {
+    args.push('--no-playback');
+  }
+  if (config.stayAwake) args.push('--stay-awake');
+  // Android's own touch indicators; emulator mouse clicks arrive as touches.
+  if (config.showTouches) args.push('--show-touches');
+  return args;
 }
 
 function cleanupCurrentSession() {
@@ -397,7 +415,6 @@ ipcMain.handle('record:start', async (_, options = {}) => {
 
   const args = [
     '--record', chunkPath,
-    '--no-playback',
     `--video-bit-rate=${bitrate}`,
     `--max-fps=${maxFps}`
   ];
@@ -412,14 +429,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     args.push(`--audio-source=${audioSource}`);
   }
 
-  if (config.stayAwake) {
-    args.push('--stay-awake');
-  }
-
-  // Android's own touch indicators; emulator mouse clicks arrive as touches.
-  if (config.showTouches) {
-    args.push('--show-touches');
-  }
+  args.push(...captureArgs(config));
 
   console.log(`Spawning scrcpy: ${scrcpyBin}`, args);
 
@@ -485,7 +495,6 @@ ipcMain.handle('record:resume', async () => {
 
   const args = [
     '--record', chunkPath,
-    '--no-playback',
     `--video-bit-rate=${currentSession.bitrate}`,
     `--max-fps=${currentSession.maxFps}`
   ];
@@ -500,14 +509,7 @@ ipcMain.handle('record:resume', async () => {
     args.push(`--audio-source=${currentSession.audioSource}`);
   }
 
-  if (config.stayAwake) {
-    args.push('--stay-awake');
-  }
-
-  // Android's own touch indicators; emulator mouse clicks arrive as touches.
-  if (config.showTouches) {
-    args.push('--show-touches');
-  }
+  args.push(...captureArgs(config));
 
   try {
     const proc = spawn(scrcpyBin, args, {

@@ -26,6 +26,7 @@ const DEFAULT_CONFIG: AppConfig = {
   micMuted: false,
   stayAwake: true,
   showTouches: false,
+  showCursor: false,
   theme: 'system'
 };
 

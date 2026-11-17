@@ -32,6 +32,7 @@ export interface AppConfig {
   micMuted: boolean;
   stayAwake: boolean;
   showTouches: boolean;
+  showCursor: boolean;
   theme: ThemeMode;
 }
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mic, MousePointerClick, Smartphone, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MousePointer2, MousePointerClick, Smartphone, Volume2, VolumeX } from 'lucide-react';
 import type { AppConfig } from '../types';
 
 interface AudioPanelProps {
@@ -88,6 +88,23 @@ export const AudioPanel: React.FC<AudioPanelProps> = ({ config, onChange, isReco
   return (
     <aside className="sider" aria-label="Capture options">
       <h2>Capture</h2>
+
+      <Section
+        icon={<MousePointer2 size={16} />}
+        title="Show cursor"
+        hint="Record a mouse pointer with hover"
+        on={config.showCursor}
+        onToggle={() => onChange({ showCursor: !config.showCursor })}
+        toggleDisabled={isRecording}
+        toggleTitle={lockedTitle}
+      >
+        {config.showCursor && (
+          <p className="text-sm text-secondary">
+            Recording opens a mirror window. Click and hover in that window, not the emulator.
+            Press Alt to release your mouse.
+          </p>
+        )}
+      </Section>
 
       <Section
         icon={<MousePointerClick size={16} />}
