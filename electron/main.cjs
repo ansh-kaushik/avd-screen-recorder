@@ -251,13 +251,21 @@ function attachChunk(proc, chunkPath, config) {
     currentSession.cursor[chunkPath] = chunk;
     startCursorTracker(currentSession.deviceId, chunk);
   }
-  proc.stderr.on('data', (d) => {
-    const text = d.toString();
-    console.log(`[scrcpy err] ${text}`);
-    if (text.includes('Recording started')) {
+  // scrcpy prints "Recording started" on stdout, and pipes can split it across chunks.
+  let tail = '';
+  let fired = false;
+  const watch = (d) => {
+    tail = (tail + d.toString()).slice(-256);
+    if (!fired && tail.includes('Recording started')) {
+      fired = true;
       chunk.t0 = Date.now();
       if (mainWindow) mainWindow.webContents.send('record:started');
     }
+  };
+  proc.stdout.on('data', watch);
+  proc.stderr.on('data', (d) => {
+    console.log(`[scrcpy err] ${d}`);
+    watch(d);
   });
   proc.on('close', () => {
     try { chunk.tracker?.kill(); } catch (e) {}
@@ -265,12 +273,32 @@ function attachChunk(proc, chunkPath, config) {
 }
 
 // Options shared by every recording chunk (start and resume).
-function captureArgs(config) {
-  const args = ['--no-playback'];
-  if (config.stayAwake) args.push('--stay-awake');
-  // Android's own touch indicators; emulator mouse clicks arrive as touches.
-  if (config.showTouches) args.push('--show-touches');
-  return args;
+function captureArgs() {
+  // --no-control: with control on, scrcpy 4.1 stalls ~10 s at startup (short clips came out
+  // empty). We never send input through scrcpy, so stay-awake/show-touches go through adb.
+  return ['--no-playback', '--no-control'];
+}
+
+function adbShell(deviceId, cmd) {
+  const adb = resolveAdbBin();
+  const target = deviceId ? `-s ${deviceId}` : '';
+  return new Promise((res) => exec(`"${adb}" ${target} shell ${cmd}`, { timeout: 5000 }, (_e, out) => res((out || '').trim())));
+}
+
+// Applies "keep awake" / "show taps" for the session and returns a function that restores them.
+async function applyDeviceSettings(deviceId, config) {
+  const restore = [];
+  if (config.stayAwake) {
+    const old = await adbShell(deviceId, 'settings get global stay_on_while_plugged_in');
+    await adbShell(deviceId, 'svc power stayon true');
+    restore.push(() => adbShell(deviceId, `settings put global stay_on_while_plugged_in ${/^\d+$/.test(old) ? old : 0}`));
+  }
+  if (config.showTouches) {
+    const old = await adbShell(deviceId, 'settings get system show_touches');
+    await adbShell(deviceId, 'settings put system show_touches 1');
+    restore.push(() => adbShell(deviceId, `settings put system show_touches ${old === '1' ? 1 : 0}`));
+  }
+  return () => Promise.all(restore.map((f) => f()));
 }
 
 function cleanupCurrentSession() {
@@ -535,6 +563,10 @@ ipcMain.handle('record:start', async (_, options = {}) => {
   const chunkPath = path.join(tempDir, `chunk_001.mp4`);
   currentSession.chunks.push(chunkPath);
 
+  if (source === 'device') {
+    currentSession.restoreDevice = await applyDeviceSettings(deviceId, config);
+  }
+
   if (source === 'browser') {
     try {
       currentSession.activeProcess = await startBrowserSessionChunk(chunkPath, config);
@@ -561,7 +593,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     args.push(`--audio-source=${audioSource}`);
   }
 
-  args.push(...captureArgs(config));
+  args.push(...captureArgs());
 
   console.log(`Spawning scrcpy: ${scrcpyBin}`, args);
 
@@ -651,7 +683,7 @@ ipcMain.handle('record:resume', async () => {
     args.push(`--audio-source=${currentSession.audioSource}`);
   }
 
-  args.push(...captureArgs(config));
+  args.push(...captureArgs());
 
   try {
     const proc = spawn(scrcpyBin, args, {
@@ -687,6 +719,7 @@ ipcMain.handle('record:stop', async (_, { micAudio = null, deviceVolume = 1 } = 
   currentSession.activeProcess = null;
 
   await stopScrcpyGracefully(proc);
+  await currentSession?.restoreDevice?.();
 
   const config = loadConfig();
   const ffmpegBin = resolveFfmpegBin();
