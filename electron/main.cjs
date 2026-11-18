@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, desktopCapturer, protocol, net, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
 const { pathToFileURL } = require('url');
 const { spawn, exec } = require('child_process');
+const { openBrowser, startBrowserChunk, pickEncoder } = require('./browser.cjs');
 
 // Register custom protocol for local media playback
 protocol.registerSchemesAsPrivileged([
@@ -59,7 +60,22 @@ const DEFAULT_CONFIG = {
   defaultFps: 60,
   audioEnabled: true,
   audioSource: 'playback',
-  stayAwake: true
+  audioVolume: 1,
+  audioMuted: false,
+  micEnabled: false,
+  micDeviceId: '',
+  micVolume: 1,
+  micMuted: false,
+  stayAwake: true,
+  showTouches: false,
+  showCursor: false,
+  source: 'device',
+  browserUrl: 'https://web.damapps.com/',
+  browserWidth: 390,
+  browserHeight: 866,
+  browserOutWidth: 1080,
+  browserOutHeight: 2400,
+  theme: 'system'
 };
 
 const CONFIG_FILE = path.join(app.getPath('userData'), 'avd_recorder_config.json');
@@ -121,8 +137,8 @@ function createWindow() {
     height: 860,
     minWidth: 1000,
     minHeight: 700,
-    backgroundColor: '#07090e',
-    title: 'AVD Studio Recorder Pro',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#000000' : '#f5f5f5',
+    title: 'AVD Studio',
     frame: true,
     autoHideMenuBar: true,
     webPreferences: {
@@ -151,6 +167,139 @@ function createWindow() {
     mainWindow = null;
     cleanupCurrentSession();
   });
+}
+
+// Win32 cursor tracker. Prints "dpi N" once, then "<unixMs> <x> <y> <clientW> <clientH>"
+// whenever the cursor moves relative to the emulator window's client area (which is
+// exactly the device screen), or "<unixMs> hidden" when the window is minimized/gone.
+const CURSOR_TRACKER_PS = `
+Add-Type @"
+using System; using System.Text; using System.Threading; using System.Runtime.InteropServices;
+public static class CT {
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+  struct RECT { public int L, T, R, B; } struct POINT { public int X, Y; }
+  static IntPtr Find(string port) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      var sb = new StringBuilder(256); GetWindowText(h, sb, 256); var t = sb.ToString();
+      if (IsWindowVisible(h) && t.StartsWith("Android Emulator") && t.EndsWith(":" + port)) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+  public static void Run(string port) {
+    SetProcessDPIAware();
+    IntPtr h = IntPtr.Zero; string last = ""; bool dpiSent = false;
+    while (true) {
+      if (!IsWindow(h)) h = Find(port);
+      string line;
+      if (h == IntPtr.Zero || IsIconic(h)) line = "hidden";
+      else {
+        if (!dpiSent) { Console.Out.WriteLine("dpi " + GetDpiForWindow(h)); dpiSent = true; }
+        POINT c; GetCursorPos(out c); RECT r; GetClientRect(h, out r); POINT o = new POINT(); ClientToScreen(h, ref o);
+        line = (c.X - o.X) + " " + (c.Y - o.Y) + " " + r.R + " " + r.B;
+      }
+      if (line != last) { Console.Out.WriteLine(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + " " + line); Console.Out.Flush(); last = line; }
+      Thread.Sleep(15);
+    }
+  }
+}
+"@
+[CT]::Run($env:AVD_EMU_PORT)
+`;
+
+function startCursorTracker(deviceId, chunk) {
+  const port = (deviceId.match(/^emulator-(\d+)$/) || [])[1];
+  if (!port) return; // only emulators have a desktop window to track
+  const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', CURSOR_TRACKER_PS], {
+    windowsHide: true,
+    env: { ...process.env, AVD_EMU_PORT: port }
+  });
+  let buf = '';
+  ps.stdout.on('data', (d) => {
+    buf += d.toString();
+    const lines = buf.split(/\r?\n/);
+    buf = lines.pop();
+    for (const l of lines) parseTrackerLine(l, chunk);
+  });
+  ps.stderr.on('data', (d) => console.error(`[cursor tracker] ${d}`));
+  chunk.tracker = ps;
+}
+
+function parseTrackerLine(line, chunk) {
+  const p = line.trim().split(' ');
+  if (p[0] === 'dpi') chunk.dpi = Number(p[1]) || 96;
+  else if (p[1] === 'hidden') chunk.samples.push({ t: Number(p[0]), hidden: true });
+  else if (p.length === 5) chunk.samples.push({ t: Number(p[0]), x: +p[1], y: +p[2], w: +p[3], h: +p[4] });
+}
+
+// Per-chunk wiring. scrcpy logs "Recording started" once the first packets hit
+// the file: the renderer starts/resumes the mic on it, and it is t=0 for the cursor.
+function attachChunk(proc, chunkPath, config) {
+  proc.avdDevice = currentSession.deviceId || '';
+  const chunk = { t0: null, dpi: 96, samples: [], tracker: null };
+  if (config.showCursor) {
+    currentSession.cursor[chunkPath] = chunk;
+    startCursorTracker(currentSession.deviceId, chunk);
+  }
+  // scrcpy prints "Recording started" on stdout, and pipes can split it across chunks.
+  let tail = '';
+  let fired = false;
+  const watch = (d) => {
+    tail = (tail + d.toString()).slice(-256);
+    if (!fired && tail.includes('Recording started')) {
+      fired = true;
+      chunk.t0 = Date.now();
+      if (mainWindow) mainWindow.webContents.send('record:started');
+    }
+  };
+  proc.stdout.on('data', watch);
+  proc.stderr.on('data', (d) => {
+    console.log(`[scrcpy err] ${d}`);
+    watch(d);
+  });
+  proc.on('close', () => {
+    try { chunk.tracker?.kill(); } catch (e) {}
+  });
+}
+
+// Options shared by every recording chunk (start and resume).
+function captureArgs() {
+  // --no-control: with control on, scrcpy 4.1 stalls ~10 s at startup (short clips came out
+  // empty). We never send input through scrcpy, so stay-awake/show-touches go through adb.
+  return ['--no-playback', '--no-control'];
+}
+
+function adbShell(deviceId, cmd) {
+  const adb = resolveAdbBin();
+  const target = deviceId ? `-s ${deviceId}` : '';
+  return new Promise((res) => exec(`"${adb}" ${target} shell ${cmd}`, { timeout: 5000 }, (_e, out) => res((out || '').trim())));
+}
+
+// Applies "keep awake" / "show taps" for the session and returns a function that restores them.
+async function applyDeviceSettings(deviceId, config) {
+  const restore = [];
+  if (config.stayAwake) {
+    const old = await adbShell(deviceId, 'settings get global stay_on_while_plugged_in');
+    await adbShell(deviceId, 'svc power stayon true');
+    restore.push(() => adbShell(deviceId, `settings put global stay_on_while_plugged_in ${/^\d+$/.test(old) ? old : 0}`));
+  }
+  if (config.showTouches) {
+    const old = await adbShell(deviceId, 'settings get system show_touches');
+    await adbShell(deviceId, 'settings put system show_touches 1');
+    restore.push(() => adbShell(deviceId, `settings put system show_touches ${old === '1' ? 1 : 0}`));
+  }
+  return () => Promise.all(restore.map((f) => f()));
 }
 
 function cleanupCurrentSession() {
@@ -197,18 +346,25 @@ if ([W]::AttachConsole(${pid})) {
 // Gracefully stop a scrcpy chunk: Ctrl+C, wait for it to finalize + exit, then
 // hard-kill as a last resort. Returns once the process is really gone.
 async function stopScrcpyGracefully(proc) {
+  if (proc && proc.gracefulStop) return proc.gracefulStop(); // browser chunk (ffmpeg)
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
   let exited = false;
   proc.once('close', () => { exited = true; });
 
-  if (process.platform === 'win32' && proc.pid) {
+  // Ctrl+C never reaches a hidden scrcpy on Windows (it was always force-killed, leaving an
+  // MP4 without its trailer = unplayable). Ending the device-side server is a clean stop:
+  // the client sees the stream end, writes "Recording complete" and exits (~2 s).
+  // ponytail: stops every scrcpy server on that device, incl. a separate mirror you run yourself.
+  if (proc.avdDevice !== undefined) {
+    await adbShell(proc.avdDevice, 'pkill -f com.genymobile.scrcpy.Server');
+  } else if (process.platform === 'win32' && proc.pid) {
     await sendCtrlC(proc.pid);
   } else {
     try { proc.kill('SIGINT'); } catch (e) {}
   }
 
-  // Give scrcpy up to ~3s to write the trailer and exit on its own.
-  for (let i = 0; i < 30 && !exited; i++) {
+  // Give scrcpy up to ~8s to write the trailer and exit on its own.
+  for (let i = 0; i < 80 && !exited; i++) {
     await new Promise(r => setTimeout(r, 100));
   }
   if (!exited) {
@@ -227,6 +383,40 @@ ipcMain.handle('config:get', async () => {
 });
 
 // 2. Save Config
+function browserOptions(config) {
+  return {
+    url: config.browserUrl,
+    width: Number(config.browserWidth) || 390,
+    height: Number(config.browserHeight) || 866,
+    outWidth: Number(config.browserOutWidth) || 1080
+  };
+}
+
+ipcMain.handle('browser:open', async () => {
+  try {
+    return await openBrowser(browserOptions(loadConfig()));
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Browser source chunk: frames from the off-screen page -> ffmpeg.
+async function startBrowserSessionChunk(chunkPath, config) {
+  await openBrowser(browserOptions(config));
+  const cursorChunk = config.showCursor ? { t0: null, dpi: 96, samples: [], tracker: null } : null;
+  if (cursorChunk) currentSession.cursor[chunkPath] = cursorChunk;
+  const ffmpegPath = config.ffmpegPath && fs.existsSync(config.ffmpegPath) ? config.ffmpegPath : 'ffmpeg';
+  return startBrowserChunk(chunkPath, {
+    ffmpegPath,
+    encoder: await pickEncoder(ffmpegPath),
+    fps: currentSession.maxFps,
+    outWidth: Number(config.browserOutWidth) || 1080,
+    outHeight: Number(config.browserOutHeight) || 2400,
+    cursorChunk,
+    onStart: () => { if (mainWindow) mainWindow.webContents.send('record:started'); }
+  });
+}
+
 ipcMain.handle('config:save', async (_, config) => {
   return saveConfig(config);
 });
@@ -339,7 +529,8 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     bitrate = config.defaultBitrate || '20M',
     maxFps = config.defaultFps || 60,
     audioEnabled = config.audioEnabled !== false,
-    audioSource = config.audioSource || 'playback'
+    audioSource = config.audioSource || 'playback',
+    source = config.source || 'device'
   } = options;
 
   if (currentSession && currentSession.isRecording) {
@@ -371,15 +562,30 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     startTime: Date.now(),
     isRecording: true,
     isPaused: false,
-    activeProcess: null
+    activeProcess: null,
+    cursor: {},
+    source
   };
 
   const chunkPath = path.join(tempDir, `chunk_001.mp4`);
   currentSession.chunks.push(chunkPath);
 
+  if (source === 'device') {
+    currentSession.restoreDevice = await applyDeviceSettings(deviceId, config);
+  }
+
+  if (source === 'browser') {
+    try {
+      currentSession.activeProcess = await startBrowserSessionChunk(chunkPath, config);
+      return { success: true, sessionId, chunkIndex: 1, tempDir, startTime: currentSession.startTime };
+    } catch (err) {
+      currentSession = null;
+      return { success: false, error: err.message };
+    }
+  }
+
   const args = [
     '--record', chunkPath,
-    '--no-playback',
     `--video-bit-rate=${bitrate}`,
     `--max-fps=${maxFps}`
   ];
@@ -394,9 +600,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     args.push(`--audio-source=${audioSource}`);
   }
 
-  if (config.stayAwake) {
-    args.push('--stay-awake');
-  }
+  args.push(...captureArgs());
 
   console.log(`Spawning scrcpy: ${scrcpyBin}`, args);
 
@@ -413,7 +617,7 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     currentSession.activeProcess = proc;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', (d) => console.log(`[scrcpy err] ${d.toString()}`));
+    attachChunk(proc, chunkPath, config);
 
     proc.on('close', (code) => {
       console.log(`scrcpy chunk finished with code ${code}`);
@@ -460,9 +664,18 @@ ipcMain.handle('record:resume', async () => {
   const chunkPath = path.join(currentSession.tempDir, chunkName);
   currentSession.chunks.push(chunkPath);
 
+  if (currentSession.source === 'browser') {
+    try {
+      currentSession.activeProcess = await startBrowserSessionChunk(chunkPath, config);
+      currentSession.isPaused = false;
+      return { success: true, isPaused: false, chunkIndex: currentSession.chunkIndex };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
   const args = [
     '--record', chunkPath,
-    '--no-playback',
     `--video-bit-rate=${currentSession.bitrate}`,
     `--max-fps=${currentSession.maxFps}`
   ];
@@ -477,9 +690,7 @@ ipcMain.handle('record:resume', async () => {
     args.push(`--audio-source=${currentSession.audioSource}`);
   }
 
-  if (config.stayAwake) {
-    args.push('--stay-awake');
-  }
+  args.push(...captureArgs());
 
   try {
     const proc = spawn(scrcpyBin, args, {
@@ -495,7 +706,7 @@ ipcMain.handle('record:resume', async () => {
     currentSession.isPaused = false;
 
     proc.stdout.on('data', (d) => console.log(`[scrcpy out] ${d.toString()}`));
-    proc.stderr.on('data', (d) => console.log(`[scrcpy err] ${d.toString()}`));
+    attachChunk(proc, chunkPath, config);
 
     return { success: true, isPaused: false, chunkIndex: currentSession.chunkIndex };
   } catch (err) {
@@ -504,7 +715,7 @@ ipcMain.handle('record:resume', async () => {
 });
 
 // 9. Stop Recording and Process Final Video
-ipcMain.handle('record:stop', async () => {
+ipcMain.handle('record:stop', async (_, { micAudio = null, deviceVolume = 1 } = {}) => {
   if (!currentSession) {
     return { success: false, error: 'No active session.' };
   }
@@ -515,11 +726,18 @@ ipcMain.handle('record:stop', async () => {
   currentSession.activeProcess = null;
 
   await stopScrcpyGracefully(proc);
+  await currentSession?.restoreDevice?.();
 
   const config = loadConfig();
   const ffmpegBin = resolveFfmpegBin();
 
-  const validChunks = session.chunks.filter(c => fs.existsSync(c) && fs.statSync(c).size > 1024);
+  let validChunks = session.chunks.filter(c => fs.existsSync(c) && fs.statSync(c).size > 1024);
+
+  const withCursor = [];
+  for (const c of validChunks) {
+    withCursor.push(session.cursor[c] ? await overlayCursor(ffmpegBin, c, session.cursor[c], session.maxFps) : c);
+  }
+  validChunks = withCursor;
 
   if (validChunks.length === 0) {
     currentSession = null;
@@ -553,6 +771,8 @@ ipcMain.handle('record:stop', async () => {
     });
   }
 
+  await mixAudio(ffmpegBin, session.tempDir, finalVideoPath, micAudio, deviceVolume);
+
   let fileSize = 0;
   let thumbnailDataUrl = null;
 
@@ -581,6 +801,92 @@ ipcMain.handle('record:stop', async () => {
     defaultSaveDir: config.defaultSaveDir
   };
 });
+
+function runFfmpeg(cmd) {
+  return new Promise((res) => exec(cmd, (err, _o, stderr) => {
+    if (err) console.error('FFmpeg error:', stderr);
+    res(!err);
+  }));
+}
+
+function probeVideoSize(ffmpegBin, file) {
+  return new Promise((res) => exec(`${ffmpegBin} -hide_banner -i "${file}"`, (_e, _o, stderr) => {
+    const m = /Video:.*?, (\d{2,5})x(\d{2,5})/.exec(stderr || '');
+    const d = /Duration: (\d+):(\d+):([\d.]+)/.exec(stderr || '');
+    const duration = d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0;
+    res(m ? { w: +m[1], h: +m[2], duration } : null);
+  }));
+}
+
+// Tracked cursor samples -> sendcmd keyframes (seconds, video px). Pure, so it's testable.
+// cursor.png is a 4x arrow with its hotspot at (4,4).
+function cursorCommands(chunk, video) {
+  const lines = [];
+  for (const s of chunk.samples) {
+    const t = Math.max(0, (s.t - chunk.t0) / 1000);
+    if (t === 0 && lines.length) lines.pop(); // only the latest pre-start position matters at t=0
+    let x = -9999, y = -9999;
+    if (!s.hidden && s.w > 0 && s.h > 0 && s.x >= 0 && s.y >= 0 && s.x < s.w && s.y < s.h) {
+      const k = (video.w / s.w) * (chunk.dpi / 96) / 4; // cursor scale in the video
+      x = Math.round((s.x * video.w) / s.w - 4 * k);
+      y = Math.round((s.y * video.h) / s.h - 4 * k);
+    }
+    lines.push(`${t.toFixed(3)} overlay@c x ${x}, overlay@c y ${y};`);
+  }
+  return lines;
+}
+
+// Draw the PC cursor onto one chunk (re-encodes video, copies audio). Returns the path to use.
+async function overlayCursor(ffmpegBin, chunkPath, chunk, fps = 60) {
+  const first = chunk.samples.find((s) => s.w > 0);
+  if (chunk.t0 === null || !first) return chunkPath;
+  const video = await probeVideoSize(ffmpegBin, chunkPath);
+  if (!video || !video.duration) return chunkPath;
+
+  const dir = path.dirname(chunkPath);
+  const base = path.basename(chunkPath, '.mp4');
+  const cmdFile = `${base}_cursor.cmd`; // relative: ffmpeg runs with cwd=dir (avoids C: escaping)
+  fs.writeFileSync(path.join(dir, cmdFile), cursorCommands(chunk, video).join('\n'), 'utf-8');
+
+  const k = (video.w / first.w) * (chunk.dpi / 96) / 4;
+  const out = path.join(dir, `${base}_cursor.mp4`);
+  const cursorPng = path.join(__dirname, 'cursor.png');
+  // scrcpy video is variable-rate (no frames while the screen is still), so resample to a
+  // constant rate first; otherwise the cursor could only move when the app redraws.
+  // tpad repeats the last frame so a still screen still lasts the whole chunk.
+  const graph = `[0:v]tpad=stop_mode=clone:stop_duration=${video.duration.toFixed(3)},fps=${Number(fps) || 60},sendcmd=f=${cmdFile}[v];[1:v]scale=iw*${k.toFixed(4)}:-1[c];[v][c]overlay@c=x=-9999:y=-9999:eval=frame[o]`;
+  // ponytail: CPU re-encode (libx264 veryfast); switch to h264_nvenc/qsv if long clips are too slow.
+  const cmd = `${ffmpegBin} -y -i "${chunkPath}" -i "${cursorPng}" -filter_complex "${graph}" -map "[o]" -map 0:a? -t ${video.duration.toFixed(3)} -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a copy "${out}"`;
+  const ok = await new Promise((res) => exec(cmd, { cwd: dir, maxBuffer: 16 * 1024 * 1024 }, (err, _o, stderr) => {
+    if (err) console.error('Cursor overlay error:', stderr);
+    res(!err);
+  }));
+  return ok && fs.existsSync(out) ? out : chunkPath;
+}
+
+// Mix the PC mic track (already gain/mute-adjusted in the renderer) and apply
+// device-audio volume. Video is stream-copied; only audio is re-encoded.
+async function mixAudio(ffmpegBin, tempDir, videoPath, micAudio, deviceVolume) {
+  const dv = Math.max(0, Math.min(2, Number(deviceVolume) || 0)).toFixed(2);
+  if (!micAudio && Number(dv) === 1) return;
+
+  const out = path.join(tempDir, 'mixed.mp4');
+  const enc = `-c:v copy -c:a aac -b:a 192k "${out}"`;
+  let ok;
+
+  if (micAudio) {
+    const micPath = path.join(tempDir, 'mic.webm');
+    fs.writeFileSync(micPath, Buffer.from(micAudio));
+    const inputs = `${ffmpegBin} -y -i "${videoPath}" -i "${micPath}"`;
+    ok = await runFfmpeg(`${inputs} -filter_complex "[0:a]volume=${dv}[d];[d][1:a]amix=inputs=2:duration=first:normalize=0[a]" -map 0:v -map "[a]" ${enc}`);
+    // No device audio track in the video (audio off / unsupported) -> mic only.
+    if (!ok) ok = await runFfmpeg(`${inputs} -map 0:v -map 1:a -shortest ${enc}`);
+  } else {
+    ok = await runFfmpeg(`${ffmpegBin} -y -i "${videoPath}" -filter:a volume=${dv} ${enc}`);
+  }
+
+  if (ok && fs.existsSync(out)) fs.renameSync(out, videoPath);
+}
 
 // 10. Get Media URL for robust HTML5 video playback
 ipcMain.handle('video:getDataUrl', async (_, filePath) => {

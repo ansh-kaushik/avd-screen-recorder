@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, Folder, Trash2, CheckCircle2, Film, ExternalLink, X } from 'lucide-react';
+import { Save, Folder, Trash2, CheckCircle2, ExternalLink, X, AlertCircle, Loader2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import type { RecordingResult } from '../types';
 
@@ -128,181 +128,55 @@ export const SaveExportModal: React.FC<SaveExportModalProps> = ({
   };
 
   return (
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(4, 6, 12, 0.85)',
-      backdropFilter: 'blur(16px)',
-      WebkitBackdropFilter: 'blur(16px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 100,
-      padding: '24px'
-    }}>
-      <div className="glass-panel" style={{
-        width: '880px',
-        maxHeight: '90vh',
-        overflowY: 'auto',
-        borderRadius: '24px',
-        border: '1px solid rgba(255, 255, 255, 0.15)',
-        boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.9)',
-        padding: '28px',
-        position: 'relative'
-      }}>
-        {/* Close / Discard Button */}
-        <button
-          onClick={onDiscard}
-          style={{
-            position: 'absolute',
-            top: '20px',
-            right: '20px',
-            background: 'rgba(255, 255, 255, 0.08)',
-            border: 'none',
-            color: 'var(--text-muted)',
-            borderRadius: '50%',
-            width: '32px',
-            height: '32px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer'
-          }}
-        >
-          <X size={18} />
-        </button>
-
-        {/* Modal Header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
-          <div style={{
-            width: '42px',
-            height: '42px',
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, #10b981, #059669)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 0 15px rgba(16, 185, 129, 0.4)'
-          }}>
-            <Film size={22} color="#fff" />
-          </div>
+    <div className="modal-mask">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="save-title" style={{ maxWidth: '880px' }}>
+        <div className="modal-header">
           <div>
-            <h2 style={{ fontSize: '20px', fontWeight: 800 }}>Recording Captured Successfully</h2>
-            <p style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
-              Review video playback, edit clip metadata, and export directly to your tutorials folder.
-            </p>
+            <h2 id="save-title">Save recording</h2>
+            <p className="text-sm text-tertiary">Review the clip, add details, and export it.</p>
           </div>
+          <button className="btn btn-text btn-icon" onClick={onClose} aria-label="Close without discarding" title="Close (keeps temp file)">
+            <X size={16} />
+          </button>
         </div>
 
-        {/* Video Player & Info Grid */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '320px 1fr',
-          gap: '24px',
-          marginBottom: '24px'
-        }}>
-          {/* Left: Video Preview Player */}
-          <div style={{
-            background: '#030508',
-            borderRadius: '16px',
-            overflow: 'hidden',
-            border: '1px solid var(--border-subtle)',
-            display: 'flex',
-            flexDirection: 'column'
-          }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '24px' }}>
+          <div className="card" style={{ overflow: 'hidden', alignSelf: 'start', boxShadow: 'none' }}>
             {videoSrc ? (
-              <video
-                key={videoSrc}
-                src={videoSrc}
-                controls
-                autoPlay
-                playsInline
-                style={{
-                  width: '100%',
-                  height: '320px',
-                  objectFit: 'contain',
-                  background: '#000'
-                }}
-              />
+              <video key={videoSrc} src={videoSrc} controls autoPlay playsInline style={{ display: 'block', width: '100%', height: '360px', objectFit: 'contain', background: '#000' }} />
             ) : (
-              <div style={{
-                height: '320px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--text-dim)',
-                fontSize: '12px'
-              }}>
-                Loading video preview...
+              <div className="text-tertiary" style={{ height: '360px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                Loading preview…
               </div>
             )}
-            <div style={{
-              padding: '10px 14px',
-              background: 'rgba(255, 255, 255, 0.03)',
-              borderTop: '1px solid var(--border-subtle)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '11px',
-              color: 'var(--text-muted)'
-            }}>
-              <span>Size: <strong>{formatFileSize(result.fileSize)}</strong></span>
-              <span>Segments: <strong>{result.chunkCount} stitched</strong></span>
+            <div className="text-sm text-secondary" style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderTop: '1px solid var(--border-secondary)' }}>
+              <span>{formatFileSize(result.fileSize)}</span>
+              <span>{result.chunkCount} {result.chunkCount === 1 ? 'segment' : 'segments joined'}</span>
             </div>
           </div>
 
-          {/* Right: Metadata Form */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {/* File Name */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                File Name (.mp4)
-              </label>
-              <input
-                type="text"
-                value={fileName}
-                onChange={(e) => setFileName(e.target.value)}
-                style={{ width: '100%' }}
-                placeholder="e.g. invoice_creation_clip.mp4"
-              />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="field">
+              <label className="field-label" htmlFor="file-name">File name</label>
+              <input id="file-name" type="text" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="invoice_creation_clip.mp4" />
             </div>
 
-            {/* Title / Description */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                Clip Title
-              </label>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                style={{ width: '100%' }}
-                placeholder="e.g. Invoices Page Full Flow"
-              />
+            <div className="field">
+              <label className="field-label" htmlFor="clip-title">Title</label>
+              <input id="clip-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Invoices page full flow" />
             </div>
 
-            {/* Category Chips */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                Category
-              </label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            <div className="field">
+              <span className="field-label" id="category-label">Category</span>
+              <div role="radiogroup" aria-labelledby="category-label" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 {CATEGORIES.map((cat) => (
                   <button
                     key={cat}
                     type="button"
+                    role="radio"
+                    aria-checked={category === cat}
                     onClick={() => setCategory(cat)}
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: '8px',
-                      fontSize: '11px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      border: 'none',
-                      background: category === cat ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'rgba(255, 255, 255, 0.06)',
-                      color: category === cat ? '#fff' : 'var(--text-muted)',
-                      transition: 'all 0.15s'
-                    }}
+                    className={`tag ${category === cat ? 'tag-selected' : ''}`}
                   >
                     {cat}
                   </button>
@@ -310,161 +184,61 @@ export const SaveExportModal: React.FC<SaveExportModalProps> = ({
               </div>
             </div>
 
-            {/* Tags Input */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                Tags (comma separated)
-              </label>
-              <input
-                type="text"
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-                style={{ width: '100%' }}
-                placeholder="e.g. tutorial, invoices, accounting"
-              />
+            <div className="field">
+              <label className="field-label" htmlFor="clip-tags">Tags</label>
+              <input id="clip-tags" type="text" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tutorial, invoices" />
+              <span className="text-sm text-tertiary">Separate with commas.</span>
             </div>
 
-            {/* Description Textarea */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                Description / Notes
-              </label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={2}
-                style={{ width: '100%', resize: 'none' }}
-                placeholder="Key highlights in this clip..."
-              />
+            <div className="field">
+              <label className="field-label" htmlFor="clip-notes">Notes</label>
+              <textarea id="clip-notes" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Key highlights in this clip" />
             </div>
 
-            {/* Destination Folder */}
-            <div>
-              <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                Destination Folder
-              </label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  value={destinationFolder}
-                  onChange={(e) => setDestinationFolder(e.target.value)}
-                  style={{ flex: 1, fontSize: '12px' }}
-                />
-                <button
-                  type="button"
-                  onClick={handleBrowseFolder}
-                  className="btn-secondary"
-                  style={{ padding: '8px 12px', fontSize: '12px' }}
-                >
-                  <Folder size={14} /> Browse
+            <div className="field">
+              <label className="field-label" htmlFor="dest">Save to</label>
+              <div className="field-row">
+                <input id="dest" type="text" value={destinationFolder} onChange={(e) => setDestinationFolder(e.target.value)} />
+                <button type="button" onClick={handleBrowseFolder} className="btn">
+                  <Folder size={16} /> Browse
                 </button>
               </div>
-              <label style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                marginTop: '10px',
-                fontSize: '12px',
-                color: 'var(--text-muted)',
-                cursor: 'pointer'
-              }}>
-                <input
-                  type="checkbox"
-                  checked={discardTemp}
-                  onChange={(e) => setDiscardTemp(e.target.checked)}
-                />
-                Discard temp file after saving
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={discardTemp} onChange={(e) => setDiscardTemp(e.target.checked)} />
+                Delete temp file after saving
               </label>
             </div>
           </div>
         </div>
 
-        {/* Error Alert */}
         {errorMessage && (
-          <div style={{
-            background: 'rgba(239, 68, 68, 0.15)',
-            border: '1px solid rgba(239, 68, 68, 0.4)',
-            color: '#fca5a5',
-            padding: '10px 14px',
-            borderRadius: '10px',
-            fontSize: '12px',
-            marginBottom: '16px'
-          }}>
-            {errorMessage}
+          <div className="alert alert-error" role="alert" style={{ marginTop: '16px' }}>
+            <AlertCircle size={16} /> {errorMessage}
           </div>
         )}
 
-        {/* Success Banner */}
         {saveSuccess && (
-          <div style={{
-            background: 'rgba(16, 185, 129, 0.15)',
-            border: '1px solid rgba(16, 185, 129, 0.4)',
-            color: '#6ee7b7',
-            padding: '12px 16px',
-            borderRadius: '12px',
-            fontSize: '13px',
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: '16px'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <CheckCircle2 size={18} color="#10b981" />
-              <span>Saved to {destinationFolder}</span>
-            </div>
-            <button
-              onClick={handleRevealInExplorer}
-              className="btn-secondary"
-              style={{ padding: '6px 12px', fontSize: '12px', background: 'rgba(16, 185, 129, 0.2)' }}
-            >
-              <ExternalLink size={14} /> Show in Explorer
+          <div className="alert alert-success" role="status" style={{ marginTop: '16px' }}>
+            <CheckCircle2 size={16} />
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Saved to {savedPath}</span>
+            <button onClick={handleRevealInExplorer} className="btn">
+              <ExternalLink size={16} /> Show in Explorer
             </button>
           </div>
         )}
 
-        {/* Modal Actions Footer */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          borderTop: '1px solid var(--border-subtle)',
-          paddingTop: '18px'
-        }}>
-          <button
-            onClick={onDiscard}
-            disabled={isSaving}
-            className="btn-secondary"
-            style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-          >
-            <Trash2 size={15} /> Discard Clip
+        <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+          <button onClick={onDiscard} disabled={isSaving} className="btn btn-danger">
+            <Trash2 size={16} /> Discard
           </button>
-
-          <div style={{ display: 'flex', gap: '10px' }}>
-            {saveSuccess ? (
-              <button
-                onClick={onClose}
-                className="btn-primary"
-                style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}
-              >
-                Done
-              </button>
-            ) : (
-              <button
-                onClick={handleSave}
-                disabled={isSaving}
-                className="btn-primary"
-              >
-                {isSaving ? (
-                  'Saving & Exporting...'
-                ) : (
-                  <>
-                    <Save size={16} /> Save Recording
-                  </>
-                )}
-              </button>
-            )}
-          </div>
+          {saveSuccess ? (
+            <button onClick={onClose} className="btn btn-primary">Done</button>
+          ) : (
+            <button onClick={handleSave} disabled={isSaving} className="btn btn-primary">
+              {isSaving ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+              {isSaving ? 'Saving…' : 'Save recording'}
+            </button>
+          )}
         </div>
       </div>
     </div>
