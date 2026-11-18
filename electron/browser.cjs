@@ -139,9 +139,12 @@ ipcMain.handle('browser:nav', async (_e, cmd) => {
 function startBrowserChunk(chunkPath, { ffmpegPath, fps, outWidth, outHeight, onStart, cursorChunk }) {
   const ff = spawn(ffmpegPath, [
     '-y', '-use_wallclock_as_timestamps', '1', '-f', 'image2pipe', '-c:v', 'mjpeg', '-i', '-',
-    '-vf', `fps=${fps},scale=${outWidth}:${outHeight}:flags=lanczos`,
+    // Chromium's JPEGs are full-range BT.601. Convert to standard TV-range BT.709 and tag it:
+    // left as full-range, most players read it as TV-range and light greys blow out to white.
+    '-vf', `fps=${fps},scale=${outWidth}:${outHeight}:flags=lanczos:in_range=full:out_range=tv:in_color_matrix=bt601:out_color_matrix=bt709`,
     // ponytail: realtime CPU encode; ultrafast keeps up at 1080x2400@60, files are larger.
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', chunkPath
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p',
+    '-color_range', 'tv', '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', chunkPath
   ], { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
   ff.stderr.on('data', () => {});
   ff.stdin.on('error', () => {});
