@@ -246,6 +246,7 @@ function parseTrackerLine(line, chunk) {
 // Per-chunk wiring. scrcpy logs "Recording started" once the first packets hit
 // the file: the renderer starts/resumes the mic on it, and it is t=0 for the cursor.
 function attachChunk(proc, chunkPath, config) {
+  proc.avdDevice = currentSession.deviceId || '';
   const chunk = { t0: null, dpi: 96, samples: [], tracker: null };
   if (config.showCursor) {
     currentSession.cursor[chunkPath] = chunk;
@@ -350,14 +351,20 @@ async function stopScrcpyGracefully(proc) {
   let exited = false;
   proc.once('close', () => { exited = true; });
 
-  if (process.platform === 'win32' && proc.pid) {
+  // Ctrl+C never reaches a hidden scrcpy on Windows (it was always force-killed, leaving an
+  // MP4 without its trailer = unplayable). Ending the device-side server is a clean stop:
+  // the client sees the stream end, writes "Recording complete" and exits (~2 s).
+  // ponytail: stops every scrcpy server on that device, incl. a separate mirror you run yourself.
+  if (proc.avdDevice !== undefined) {
+    await adbShell(proc.avdDevice, 'pkill -f com.genymobile.scrcpy.Server');
+  } else if (process.platform === 'win32' && proc.pid) {
     await sendCtrlC(proc.pid);
   } else {
     try { proc.kill('SIGINT'); } catch (e) {}
   }
 
-  // Give scrcpy up to ~3s to write the trailer and exit on its own.
-  for (let i = 0; i < 30 && !exited; i++) {
+  // Give scrcpy up to ~8s to write the trailer and exit on its own.
+  for (let i = 0; i < 80 && !exited; i++) {
     await new Promise(r => setTimeout(r, 100));
   }
   if (!exited) {
