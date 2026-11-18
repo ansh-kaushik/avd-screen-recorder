@@ -5,7 +5,7 @@ const os = require('os');
 const http = require('http');
 const { pathToFileURL } = require('url');
 const { spawn, exec } = require('child_process');
-const { openBrowser, startBrowserChunk } = require('./browser.cjs');
+const { openBrowser, startBrowserChunk, pickEncoder } = require('./browser.cjs');
 
 // Register custom protocol for local media playback
 protocol.registerSchemesAsPrivileged([
@@ -370,8 +370,10 @@ async function startBrowserSessionChunk(chunkPath, config) {
   await openBrowser(browserOptions(config));
   const cursorChunk = config.showCursor ? { t0: null, dpi: 96, samples: [], tracker: null } : null;
   if (cursorChunk) currentSession.cursor[chunkPath] = cursorChunk;
+  const ffmpegPath = config.ffmpegPath && fs.existsSync(config.ffmpegPath) ? config.ffmpegPath : 'ffmpeg';
   return startBrowserChunk(chunkPath, {
-    ffmpegPath: config.ffmpegPath && fs.existsSync(config.ffmpegPath) ? config.ffmpegPath : 'ffmpeg',
+    ffmpegPath,
+    encoder: await pickEncoder(ffmpegPath),
     fps: currentSession.maxFps,
     outWidth: Number(config.browserOutWidth) || 1080,
     outHeight: Number(config.browserOutHeight) || 2400,
