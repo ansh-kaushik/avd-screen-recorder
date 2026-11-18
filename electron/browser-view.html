@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AVD Studio Browser</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0"></canvas>
+<script>
+  // Shows the off-screen HD page and forwards input to it. Positions are sent as
+  // fractions (rx, ry) so the main process maps them to the page's CSS pixels.
+  const c = document.getElementById('c');
+  const g = c.getContext('2d');
+  let pending = null, busy = false;
+
+  function draw() {
+    if (busy || !pending) return;
+    busy = true;
+    const buf = pending; pending = null;
+    createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then((img) => {
+      const w = Math.round(c.clientWidth * devicePixelRatio), h = Math.round(c.clientHeight * devicePixelRatio);
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(img, 0, 0, w, h);
+      img.close();
+    }).finally(() => { busy = false; draw(); }); // always draw the newest frame, drop stale ones
+  }
+  avdBrowser.onFrame((buf) => { pending = buf; draw(); });
+  avdBrowser.onCursor((type) => { c.style.cursor = type === 'hand' ? 'pointer' : type; });
+
+  const BUTTONS = ['left', 'middle', 'right'];
+  const pos = (e) => ({ rx: e.offsetX / c.clientWidth, ry: e.offsetY / c.clientHeight });
+  const mods = (e) => [e.shiftKey && 'shift', e.ctrlKey && 'control', e.altKey && 'alt', e.metaKey && 'meta'].filter(Boolean);
+  const send = avdBrowser.input;
+
+  c.addEventListener('mousemove', (e) => send({ type: 'mouseMove', ...pos(e), modifiers: mods(e) }));
+  c.addEventListener('mousedown', (e) => { c.focus(); send({ type: 'mouseDown', ...pos(e), button: BUTTONS[e.button] || 'left', clickCount: e.detail || 1, modifiers: mods(e) }); });
+  c.addEventListener('mouseup', (e) => send({ type: 'mouseUp', ...pos(e), button: BUTTONS[e.button] || 'left', clickCount: e.detail || 1, modifiers: mods(e) }));
+  c.addEventListener('mouseleave', () => send({ type: 'leave' }));
+  c.addEventListener('contextmenu', (e) => e.preventDefault());
+  c.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    send({ type: 'mouseWheel', ...pos(e), deltaX: -e.deltaX, deltaY: -e.deltaY, canScroll: true, modifiers: mods(e) });
+  }, { passive: false });
+
+  const KEYS = { ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down', ' ': 'Space' };
+  window.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    if (e.key === 'F5') return avdBrowser.nav('reload');
+    if (e.altKey && e.key === 'ArrowLeft') return avdBrowser.nav('back');
+    if (e.altKey && e.key === 'ArrowRight') return avdBrowser.nav('forward');
+    const keyCode = KEYS[e.key] || e.key;
+    send({ type: 'keyDown', keyCode, modifiers: mods(e) });
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) send({ type: 'char', keyCode: e.key, modifiers: mods(e) });
+  });
+  window.addEventListener('keyup', (e) => {
+    e.preventDefault();
+    send({ type: 'keyUp', keyCode: KEYS[e.key] || e.key, modifiers: mods(e) });
+  });
+</script>
+</body>
+</html>

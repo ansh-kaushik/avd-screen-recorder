@@ -5,6 +5,7 @@ const os = require('os');
 const http = require('http');
 const { pathToFileURL } = require('url');
 const { spawn, exec } = require('child_process');
+const { openBrowser, startBrowserChunk } = require('./browser.cjs');
 
 // Register custom protocol for local media playback
 protocol.registerSchemesAsPrivileged([
@@ -68,6 +69,12 @@ const DEFAULT_CONFIG = {
   stayAwake: true,
   showTouches: false,
   showCursor: false,
+  source: 'device',
+  browserUrl: 'https://web.damapps.com/',
+  browserWidth: 390,
+  browserHeight: 866,
+  browserOutWidth: 1080,
+  browserOutHeight: 2400,
   theme: 'system'
 };
 
@@ -310,6 +317,7 @@ if ([W]::AttachConsole(${pid})) {
 // Gracefully stop a scrcpy chunk: Ctrl+C, wait for it to finalize + exit, then
 // hard-kill as a last resort. Returns once the process is really gone.
 async function stopScrcpyGracefully(proc) {
+  if (proc && proc.gracefulStop) return proc.gracefulStop(); // browser chunk (ffmpeg)
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
   let exited = false;
   proc.once('close', () => { exited = true; });
@@ -340,6 +348,38 @@ ipcMain.handle('config:get', async () => {
 });
 
 // 2. Save Config
+function browserOptions(config) {
+  return {
+    url: config.browserUrl,
+    width: Number(config.browserWidth) || 390,
+    height: Number(config.browserHeight) || 866,
+    outWidth: Number(config.browserOutWidth) || 1080
+  };
+}
+
+ipcMain.handle('browser:open', async () => {
+  try {
+    return await openBrowser(browserOptions(loadConfig()));
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Browser source chunk: frames from the off-screen page -> ffmpeg.
+async function startBrowserSessionChunk(chunkPath, config) {
+  await openBrowser(browserOptions(config));
+  const cursorChunk = config.showCursor ? { t0: null, dpi: 96, samples: [], tracker: null } : null;
+  if (cursorChunk) currentSession.cursor[chunkPath] = cursorChunk;
+  return startBrowserChunk(chunkPath, {
+    ffmpegPath: config.ffmpegPath && fs.existsSync(config.ffmpegPath) ? config.ffmpegPath : 'ffmpeg',
+    fps: currentSession.maxFps,
+    outWidth: Number(config.browserOutWidth) || 1080,
+    outHeight: Number(config.browserOutHeight) || 2400,
+    cursorChunk,
+    onStart: () => { if (mainWindow) mainWindow.webContents.send('record:started'); }
+  });
+}
+
 ipcMain.handle('config:save', async (_, config) => {
   return saveConfig(config);
 });
@@ -452,7 +492,8 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     bitrate = config.defaultBitrate || '20M',
     maxFps = config.defaultFps || 60,
     audioEnabled = config.audioEnabled !== false,
-    audioSource = config.audioSource || 'playback'
+    audioSource = config.audioSource || 'playback',
+    source = config.source || 'device'
   } = options;
 
   if (currentSession && currentSession.isRecording) {
@@ -485,11 +526,22 @@ ipcMain.handle('record:start', async (_, options = {}) => {
     isRecording: true,
     isPaused: false,
     activeProcess: null,
-    cursor: {}
+    cursor: {},
+    source
   };
 
   const chunkPath = path.join(tempDir, `chunk_001.mp4`);
   currentSession.chunks.push(chunkPath);
+
+  if (source === 'browser') {
+    try {
+      currentSession.activeProcess = await startBrowserSessionChunk(chunkPath, config);
+      return { success: true, sessionId, chunkIndex: 1, tempDir, startTime: currentSession.startTime };
+    } catch (err) {
+      currentSession = null;
+      return { success: false, error: err.message };
+    }
+  }
 
   const args = [
     '--record', chunkPath,
@@ -570,6 +622,16 @@ ipcMain.handle('record:resume', async () => {
   const chunkName = `chunk_${String(currentSession.chunkIndex).padStart(3, '0')}.mp4`;
   const chunkPath = path.join(currentSession.tempDir, chunkName);
   currentSession.chunks.push(chunkPath);
+
+  if (currentSession.source === 'browser') {
+    try {
+      currentSession.activeProcess = await startBrowserSessionChunk(chunkPath, config);
+      currentSession.isPaused = false;
+      return { success: true, isPaused: false, chunkIndex: currentSession.chunkIndex };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
 
   const args = [
     '--record', chunkPath,

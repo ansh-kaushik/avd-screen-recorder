@@ -6,7 +6,7 @@ import { SaveExportModal } from './components/SaveExportModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AudioPanel } from './components/AudioPanel';
 import { useMic } from './useMic';
-import { CheckCircle2, Info, XCircle } from 'lucide-react';
+import { CheckCircle2, Globe, Info, XCircle } from 'lucide-react';
 import type { AndroidDevice, AppConfig, RecordingResult, ThemeMode } from './types';
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -27,6 +27,12 @@ const DEFAULT_CONFIG: AppConfig = {
   stayAwake: true,
   showTouches: false,
   showCursor: false,
+  source: 'device',
+  browserUrl: 'https://web.damapps.com/',
+  browserWidth: 390,
+  browserHeight: 866,
+  browserOutWidth: 1080,
+  browserOutHeight: 2400,
   theme: 'system'
 };
 
@@ -100,7 +106,7 @@ export function App() {
   // Start Recording
   const handleStartRecording = async () => {
     if (!window.electronAPI) return;
-    if (!selectedDeviceId && devices.length === 0) {
+    if (config.source === 'device' && !selectedDeviceId && devices.length === 0) {
       showToast('No Android device or emulator detected.', 'error');
       return;
     }
@@ -269,6 +275,7 @@ export function App() {
         isPaused={isPaused}
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedDevice={selectedDevice}
+        isBrowser={config.source === 'browser'}
         theme={config.theme}
         onThemeChange={(theme: ThemeMode) => handleAudioChange({ theme })}
       />
@@ -277,6 +284,10 @@ export function App() {
         <AudioPanel
           config={config}
           onChange={handleAudioChange}
+          onOpenBrowser={async () => {
+            const res = await window.electronAPI?.openBrowser();
+            if (res && !res.success) showToast(res.error || 'Could not open the page', 'error');
+          }}
           isRecording={isRecording}
           micDevices={mic.devices}
           micLevel={mic.level}
@@ -284,6 +295,19 @@ export function App() {
         />
 
         <main className="stage">
+          {config.source === 'browser' ? (
+            <div className="stage-canvas">
+              <div className="card" style={{ padding: '24px', maxWidth: '360px', textAlign: 'center' }}>
+                <Globe size={24} color="var(--color-primary)" aria-hidden />
+                <h2 style={{ margin: '8px 0 4px' }}>Browser recording</h2>
+                <p className="text-secondary">
+                  Use the site in the <strong>AVD Studio Browser</strong> window. It renders at{' '}
+                  {config.browserOutWidth}×{config.browserOutHeight}, so the video is sharp even though the window is small.
+                </p>
+                <p className="text-sm text-tertiary" style={{ marginTop: '8px' }}>F5 reloads · Alt+← goes back</p>
+              </div>
+            </div>
+          ) : (
           <DevicePreview
             selectedDevice={selectedDevice}
             isRecording={isRecording}
@@ -291,6 +315,7 @@ export function App() {
             bitrate={config.defaultBitrate}
             fps={config.defaultFps}
           />
+          )}
           <RecordingControls
             isRecording={isRecording}
             isPaused={isPaused}
@@ -302,7 +327,7 @@ export function App() {
             bitrate={config.defaultBitrate}
             fps={config.defaultFps}
             segmentCount={segmentCount}
-            hasDevice={devices.length > 0}
+            hasDevice={config.source === 'browser' || devices.length > 0}
             micEnabled={config.micEnabled}
             micLevel={mic.level}
           />

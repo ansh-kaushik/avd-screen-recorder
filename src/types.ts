@@ -14,6 +14,7 @@ export interface WindowSource {
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark';
+export type CaptureSource = 'device' | 'browser';
 
 export interface AppConfig {
   scrcpyPath: string;
@@ -33,6 +34,12 @@ export interface AppConfig {
   stayAwake: boolean;
   showTouches: boolean;
   showCursor: boolean;
+  source: CaptureSource;
+  browserUrl: string;
+  browserWidth: number;
+  browserHeight: number;
+  browserOutWidth: number;
+  browserOutHeight: number;
   theme: ThemeMode;
 }
 
@@ -92,6 +99,8 @@ export interface ElectronAPI {
 
   selectDirectory: (defaultPath?: string) => Promise<string | null>;
   openFolder: (targetPath: string) => Promise<boolean>;
+  openBrowser: () => Promise<{ success: boolean; error?: string }>;
+  browserNav: (cmd: 'reload' | 'back' | 'forward') => Promise<boolean>;
 }
 
 declare global {

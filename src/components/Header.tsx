@@ -12,6 +12,7 @@ interface HeaderProps {
   isPaused: boolean;
   onOpenSettings: () => void;
   selectedDevice?: AndroidDevice;
+  isBrowser: boolean;
   theme: ThemeMode;
   onThemeChange: (t: ThemeMode) => void;
 }
@@ -32,6 +33,7 @@ export const Header: React.FC<HeaderProps> = ({
   isPaused,
   onOpenSettings,
   selectedDevice,
+  isBrowser,
   theme,
   onThemeChange
 }) => {
@@ -39,7 +41,7 @@ export const Header: React.FC<HeaderProps> = ({
     ? isPaused
       ? { cls: 'badge-warning', text: 'Paused' }
       : { cls: 'badge-error badge-processing', text: 'Recording' }
-    : selectedDevice
+    : selectedDevice || isBrowser
       ? { cls: 'badge-success', text: 'Ready' }
       : { cls: '', text: 'No device' };
 
@@ -52,6 +54,9 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        {isBrowser ? (
+          <span className="tag tag-blue">Browser · AVD Studio Browser window</span>
+        ) : (
         <div className="field-row" style={{ alignItems: 'center' }}>
           <select
             aria-label="Android device"
@@ -81,6 +86,7 @@ export const Header: React.FC<HeaderProps> = ({
             <RefreshCw size={16} className={isLoadingDevices ? 'spin' : ''} />
           </button>
         </div>
+        )}
 
         <span className={`badge ${status.cls}`} role="status" style={{ minWidth: '88px' }}>{status.text}</span>
 

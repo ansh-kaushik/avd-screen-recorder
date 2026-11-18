@@ -22,5 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getVideoUrl: (filePath) => ipcRenderer.invoke('video:getDataUrl', filePath),
 
   selectDirectory: (defaultPath) => ipcRenderer.invoke('dialog:selectDirectory', defaultPath),
-  openFolder: (targetPath) => ipcRenderer.invoke('system:openFolder', targetPath)
+  openFolder: (targetPath) => ipcRenderer.invoke('system:openFolder', targetPath),
+  openBrowser: () => ipcRenderer.invoke('browser:open'),
+  browserNav: (cmd) => ipcRenderer.invoke('browser:nav', cmd)
 });
